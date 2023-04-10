@@ -90,6 +90,12 @@ io.on('connection', (socket) => {
         const { room, username } = data;
         socket.join(room);
         console.log(`User ${username} joined room ${room}`);
+        // check if user in room are max 10
+        const usersInRoom = allUsers.filter((user) => user.room === room);
+        if (usersInRoom.length >= 10) {
+            socket.emit('room_full');
+            return;
+        }
         socket.on('send_message', (data) => {
             const { message, username, room } = data;
             io.in(room).emit('receive_message', data); // send message to all users in the room
@@ -101,7 +107,7 @@ io.on('connection', (socket) => {
             });
             newMessage.save();
         });
-        socket.emit('send_message', {
+        socket.to(room).emit('receive_message', {
             username: CHAT_BOT,
             room: room,
             message: `${username} has joined the room`,
@@ -114,6 +120,28 @@ io.on('connection', (socket) => {
         let chatRoomUsers = allUsers.filter((user) => user.room === chatRoom);
         socket.to(room).emit('chatroom_users', chatRoomUsers);
         socket.emit('chatroom_users', chatRoomUsers);
+        socket.on('get_chatroom_users', (room) => {
+            chatRoomUsers = allUsers.filter((user) => user.room === room);
+            socket.emit('chatroom_users', chatRoomUsers);
+        });
+        socket.on('leave_room', (data) => {
+            const { username, room } = data;
+            socket.leave(room);
+            console.log(`User ${username} left room ${room}`);
+            allUsers = allUsers.filter((user) => user.id !== socket.id);
+            chatRoomUsers = allUsers.filter((user) => user.room === chatRoom);
+            socket.to(room).emit('chatroom_users', chatRoomUsers);
+            socket.to(room).emit('receive_message', {
+                username: CHAT_BOT,
+                room: room,
+                message: `${username} has left the room`,
+            });
+        });
+    });
+    socket.on('logout', () => {
+        console.log(`User disconnected: ${socket.id}`);
+        allUsers = allUsers.filter((user) => user.id !== socket.id);
+        socket.disconnect();
     });
 });
 app.post('/api/signup', async (req, res) => {

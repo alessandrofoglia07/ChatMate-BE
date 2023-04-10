@@ -102,6 +102,13 @@ io.on('connection', (socket) => {
         socket.join(room);
         console.log(`User ${username} joined room ${room}`);
 
+        // check if user in room are max 10
+        const usersInRoom = allUsers.filter((user: { room: string; }) => user.room === room);
+        if (usersInRoom.length >= 10) {
+            socket.emit('room_full');
+            return;
+        }
+
         socket.on('send_message', (data: { username: string, room: string, message: string; }) => {
             const { message, username, room } = data;
             io.in(room).emit('receive_message', data); // send message to all users in the room
@@ -114,7 +121,7 @@ io.on('connection', (socket) => {
             newMessage.save();
         });
 
-        socket.emit('send_message', {
+        socket.to(room).emit('receive_message', {
             username: CHAT_BOT,
             room: room,
             message: `${username} has joined the room`,
@@ -131,6 +138,31 @@ io.on('connection', (socket) => {
         socket.to(room).emit('chatroom_users', chatRoomUsers);
         socket.emit('chatroom_users', chatRoomUsers);
 
+        socket.on('get_chatroom_users', (room: string) => {
+            chatRoomUsers = allUsers.filter((user: { room: string; }) => user.room === room);
+            socket.emit('chatroom_users', chatRoomUsers);
+        });
+
+        socket.on('leave_room', (data: { username: string, room: string; }) => {
+            const { username, room } = data;
+            socket.leave(room);
+            console.log(`User ${username} left room ${room}`);
+            allUsers = allUsers.filter((user: { id: string; }) => user.id !== socket.id);
+            chatRoomUsers = allUsers.filter((user: { room: string; }) => user.room === chatRoom);
+            socket.to(room).emit('chatroom_users', chatRoomUsers);
+            socket.to(room).emit('receive_message', {
+                username: CHAT_BOT,
+                room: room,
+                message: `${username} has left the room`,
+            });
+        });
+
+    });
+
+    socket.on('logout', () => {
+        console.log(`User disconnected: ${socket.id}`);
+        allUsers = allUsers.filter((user: { id: string; }) => user.id !== socket.id);
+        socket.disconnect();
     });
 });
 
