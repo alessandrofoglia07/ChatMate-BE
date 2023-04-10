@@ -3,12 +3,22 @@ import cors from 'cors';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import User from './models/users.js';
+import Message from './models/messages.js';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import nodemailer from 'nodemailer';
+import http from 'http';
+import { Server } from 'socket.io';
 dotenv.config();
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: 'http://localhost:3000',
+        methods: ['GET', 'POST'],
+    }
+});
 app.use(express.json());
 app.use(cors());
 const dbURI = process.env.ATLAS_URI;
@@ -17,7 +27,7 @@ const connectToDB = async () => {
         await mongoose.connect(dbURI);
         console.log('Connected to MongoDB');
         const port = process.env.PORT || 5000;
-        app.listen(port, () => console.log(`Server started on port ${port}`));
+        server.listen(port, () => console.log(`Server started on port ${port}`));
     }
     catch (err) {
         console.log(err);
@@ -69,6 +79,43 @@ const createTomorrowsDate = () => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     return tomorrow;
 };
+const CHAT_BOT = 'ChatBot';
+let chatRoom = '';
+let allUsers = [];
+// listen for socket connections from client
+io.on('connection', (socket) => {
+    console.log(`User connected: ${socket.id}`);
+    // listen for user to join a room
+    socket.on('join_room', async (data) => {
+        const { room, username } = data;
+        socket.join(room);
+        console.log(`User ${username} joined room ${room}`);
+        socket.on('send_message', (data) => {
+            const { message, username, room } = data;
+            io.in(room).emit('receive_message', data); // send message to all users in the room
+            // save message to db
+            const newMessage = new Message({
+                room: room,
+                message: message,
+                username: username,
+            });
+            newMessage.save();
+        });
+        socket.emit('send_message', {
+            username: CHAT_BOT,
+            room: room,
+            message: `${username} has joined the room`,
+        });
+        // get last 100 messages from db
+        const last100Messages = await Message.find({ room: room }).sort({ createdAt: -1 }).limit(100);
+        socket.emit('last_100_messages', last100Messages.reverse());
+        chatRoom = room;
+        allUsers.push({ id: socket.id, username: username, room: room });
+        let chatRoomUsers = allUsers.filter((user) => user.room === chatRoom);
+        socket.to(room).emit('chatroom_users', chatRoomUsers);
+        socket.emit('chatroom_users', chatRoomUsers);
+    });
+});
 app.post('/api/signup', async (req, res) => {
     checkIfTokenIsExpired();
     const username = req.body.username;
@@ -142,40 +189,35 @@ app.get('/api/verify/:token', async (req, res) => {
 app.post('/api/login', async (req, res) => {
     checkIfTokenIsExpired();
     const email = req.body.email;
+    console.log(email);
     const password = req.body.password;
     try {
-        await User.findOne({ email: email }, async (err, user) => {
+        const user = await User.findOne({ email: email });
+        if (!user) {
+            console.log('User not found');
+            return res.status(404).send('User not found');
+        }
+        if (!user.verified) {
+            console.log('User not verified');
+            return res.status(401).send('User not verified');
+        }
+        bcrypt.compare(password, user.password, async (err, result) => {
             if (err) {
                 console.log(err);
                 return res.status(500).send('Error');
             }
             else {
-                if (!user) {
-                    console.log('User not found');
-                    return res.status(404).send('User not found');
+                if (result) {
+                    const username = user.username;
+                    const id = user._id;
+                    const accessToken = jwt.sign({ id: id, email: email, username: username }, process.env.JWT_SECRET);
+                    res.status(200).send({ message: 'Login successful', accessToken: accessToken, id: id, username: username, email: email });
+                    console.log('Login successful');
                 }
-                if (!user.verified) {
-                    console.log('User not verified');
-                    return res.status(401).send('User not verified');
+                else {
+                    console.log('Incorrect password');
+                    return res.status(401).send('Incorrect password');
                 }
-                bcrypt.compare(password, user.password, async (err, result) => {
-                    if (err) {
-                        console.log(err);
-                        return res.status(500).send('Error');
-                    }
-                    else {
-                        if (result) {
-                            const username = user.username;
-                            const id = user._id;
-                            const accessToken = jwt.sign({ id: id, email: email, username: username }, process.env.JWT_SECRET);
-                            res.status(200).send({ message: 'Login successful', accessToken: accessToken, id: id, username: username, email: email });
-                        }
-                        else {
-                            console.log('Incorrect password');
-                            return res.status(401).send('Incorrect password');
-                        }
-                    }
-                });
             }
         });
     }
